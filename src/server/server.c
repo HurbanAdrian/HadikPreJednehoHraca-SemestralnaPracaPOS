@@ -36,6 +36,13 @@ int main() {
 
     pthread_mutex_init(&stav->mutex, &mattr);
 
+    pthread_condattr_t cattr;
+    pthread_condattr_init(&cattr);
+    pthread_condattr_setpshared(&cattr, PTHREAD_PROCESS_SHARED);
+
+    pthread_cond_init(&stav->cond_tick, &cattr);
+    pthread_cond_init(&stav->cond_vstup, &cattr);
+
     // 5. inicializuj stav hry
     pthread_mutex_lock(&stav->mutex);
     stav->server_bezi = true;
@@ -45,11 +52,28 @@ int main() {
     printf("[SERVER] Bežím...\n");
 
     // 6. hlavný cyklus servera
-    while (1) {
+    while (stav->server_bezi) {
         usleep(200000); // 200 ms
 
         pthread_mutex_lock(&stav->mutex);
+
+        // spracuj vstup od klienta
+        if (stav->novy_vstup) {
+            if (stav->vstup == SMER_KONIEC) {
+                printf("[SERVER] Klient chce ukončiť hru\n");
+                stav->server_bezi = false;
+            } else {
+                printf("[SERVER] Vstup od klienta: %d\n", stav->vstup);
+            }
+            stav->novy_vstup = false;
+        }
+
         stav->tick++;
+        pthread_cond_broadcast(&stav->cond_tick);
+
         pthread_mutex_unlock(&stav->mutex);
     }
+
+    printf("[SERVER] Končím\n");
+
 }
