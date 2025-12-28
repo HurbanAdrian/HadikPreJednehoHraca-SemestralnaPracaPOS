@@ -17,6 +17,15 @@ static bool je_na_hadovi(HernyStav* stav, int x, int y) {
     return false;
 }
 
+bool je_prekazka(HernyStav* stav, int x, int y) {
+    for (int i = 0; i < stav->pocet_prekazok; i++) {
+        if (stav->prekazky[i].x == x && stav->prekazky[i].y == y) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void vygeneruj_ovocie(HernyStav* stav) {
     int x, y;
     do {
@@ -29,6 +38,42 @@ static void vygeneruj_ovocie(HernyStav* stav) {
 
     printf("[SERVER] Ovocie na (%d,%d)\n", x, y);
 }
+
+void generuj_prekazky(HernyStav* stav) {
+    stav->pocet_prekazok = 0;
+
+    if (stav->rezim != SVET_S_PREKAZKAMI) {
+        return; // v režime bez prekážok negenerujeme nič
+    }
+
+    int ciel = MAX_PREKAZKY;
+
+    while (stav->pocet_prekazok < ciel) {
+        int x = rand() % MAP_WIDTH;
+        int y = rand() % MAP_HEIGHT;
+
+        // 1. neokrajové pole (zjednodušenie dosiahnuteľnosti)
+        if (x == 0 || x == MAP_WIDTH - 1 ||
+            y == 0 || y == MAP_HEIGHT - 1) {
+            continue;
+            }
+
+        // 2. nesmie byť na hadovi
+        if (je_na_hadovi(stav, x, y)) continue;
+
+        // 3. nesmie byť ovocie
+        if (stav->ovocie.x == x && stav->ovocie.y == y) continue;
+
+        // 4. nesmie sa opakovať
+        if (je_prekazka(stav, x, y)) continue;
+
+        // OK – pridaj prekážku
+        stav->prekazky[stav->pocet_prekazok].x = x;
+        stav->prekazky[stav->pocet_prekazok].y = y;
+        stav->pocet_prekazok++;
+    }
+}
+
 
 static bool je_opacny(Smer a, Smer b) {
     return (a == SMER_HORE  && b == SMER_DOLE) ||
@@ -83,10 +128,9 @@ static void posun_telo(HernyStav* stav) {
 static bool kolizia_so_sebou(HernyStav* stav) {
     // hlava je had[0]
     for (int i = 1; i < stav->dlzka_hada; i++) {
-        if (stav->had[0].x == stav->had[i].x &&
-            stav->had[0].y == stav->had[i].y) {
+        if (stav->had[0].x == stav->had[i].x && stav->had[0].y == stav->had[i].y) {
             return true;
-            }
+        }
     }
     return false;
 }
@@ -138,6 +182,7 @@ int main() {
 
     stav->dlzka_hada = 5;
 
+    // inicializacia hada po X osi
     for (int i = 0; i < stav->dlzka_hada; i++) {
         stav->had[i].x = (MAP_WIDTH / 2) - i;
         stav->had[i].y = MAP_HEIGHT / 2;
@@ -152,7 +197,7 @@ int main() {
 
     // 6. hlavný cyklus servera
     while (stav->server_bezi) {
-        usleep(500000); // 200 ms
+        usleep(200000); // 200 ms
 
         pthread_mutex_lock(&stav->mutex);
 

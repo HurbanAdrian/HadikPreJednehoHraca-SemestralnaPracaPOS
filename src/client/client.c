@@ -3,8 +3,23 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <stdlib.h>
+#include <termios.h>
+
 
 #include "../common/common.h"
+
+void vypni_echo(struct termios* povodny) {
+    struct termios t;
+    tcgetattr(STDIN_FILENO, povodny);  // uložíme pôvodný stav
+    t = *povodny;
+    t.c_lflag &= ~(ECHO | ICANON);      // (ECHO | ICANON) = bitová maska ~(...) = „vypni tieto bity“ &= = aplikuj zmenu    Enter nie je potrebný & klávesy sa nevypisujú
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
+void zapni_echo(const struct termios* povodny) {
+    tcsetattr(STDIN_FILENO, TCSANOW, povodny);
+}
 
 Smer precitaj_smer() {
     char c = getchar();
@@ -22,7 +37,7 @@ Smer precitaj_smer() {
 void* input_thread(void* arg) {
     HernyStav* stav = (HernyStav*)arg;
 
-    printf("[CLIENT] Ovládanie: w a s d, q = koniec\n");
+    //printf("[CLIENT] Ovládanie: w a s d, q = koniec\n");
 
     while (1) {
         Smer s = precitaj_smer();
@@ -41,6 +56,52 @@ void* input_thread(void* arg) {
 
     return NULL;
 }
+
+void vykresli_mapu(HernyStav* stav) {
+    char mapa[MAP_HEIGHT][MAP_WIDTH];
+
+    // 1. vyplň prázdno
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            mapa[y][x] = ZNAK_PRAZDNO;
+        }
+    }
+
+    // 2. ovocie
+    mapa[stav->ovocie.y][stav->ovocie.x] = ZNAK_OVOCIE;
+
+    // 3. telo hada
+    for (int i = stav->dlzka_hada - 1; i > 0; i--) {
+        mapa[stav->had[i].y][stav->had[i].x] = ZNAK_TELO;
+    }
+
+    // 4. hlava
+    mapa[stav->had[0].y][stav->had[0].x] = ZNAK_HLAVA;
+
+    // 5. vykresli
+    // horná stena
+    putchar('#');
+    for (int x = 0; x < MAP_WIDTH; x++) putchar('#');
+    putchar('#');
+    putchar('\n');
+
+    // vnútro + bočné steny
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        putchar('#'); // ľavá stena
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            putchar(mapa[y][x]);
+        }
+        putchar('#'); // pravá stena
+        putchar('\n');
+    }
+
+    // dolná stena
+    putchar('#');
+    for (int x = 0; x < MAP_WIDTH; x++) putchar('#');
+    putchar('#');
+    putchar('\n');
+}
+
 
 void* render_thread(void* arg) {
     HernyStav* stav = (HernyStav*)arg;
@@ -61,13 +122,17 @@ void* render_thread(void* arg) {
 
         posledny_tick = stav->tick;
 
-        printf("[CLIENT] Tick %lu | had: ", stav->tick);
-        for (int i = 0; i < stav->dlzka_hada; i++) {
+        //system("clear");
+        //printf("\033[H");
+        printf("\033[H\033[J");
+        printf("[CLIENT] Tick %lu | had %d  \n", stav->tick, stav->dlzka_hada);
+        /*for (int i = 0; i < stav->dlzka_hada; i++) {
             printf("(%d,%d) ", stav->had[i].x, stav->had[i].y);
         }
-        printf("| ovocie=(%d,%d)\n",
-               stav->ovocie.x,
-               stav->ovocie.y);
+        printf("| ovocie=(%d,%d)\n", stav->ovocie.x, stav->ovocie.y);*/
+
+        vykresli_mapu(stav);
+        fflush(stdout);
 
         pthread_mutex_unlock(&stav->mutex);
     }
@@ -76,6 +141,10 @@ void* render_thread(void* arg) {
 }
 
 int main() {
+    struct termios povodny_term;   // LOKÁLNA PREMENNÁ
+
+    vypni_echo(&povodny_term);
+
     // 1. otvor existujúcu zdieľanú pamäť
     int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
     if (shm_fd == -1) {
@@ -105,6 +174,7 @@ int main() {
     pthread_join(t_render, NULL);
 
     printf("[CLIENT] Končím\n");
+    zapni_echo(&povodny_term);
     return 0;
 
 }

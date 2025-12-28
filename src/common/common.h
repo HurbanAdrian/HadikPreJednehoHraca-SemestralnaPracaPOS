@@ -9,6 +9,14 @@
 #define MAP_WIDTH  40
 #define MAP_HEIGHT 20
 #define MAX_DLZKA_HADA 100
+#define MAX_PREKAZKY 30
+
+#define ZNAK_PRAZDNO ' '
+#define ZNAK_STENA   '#'
+#define ZNAK_HLAVA   '0'
+#define ZNAK_TELO    'o'
+#define ZNAK_OVOCIE  '*'
+
 
 typedef enum {
     SMER_NONE = 0,
@@ -24,6 +32,12 @@ typedef struct {
     int y;
 } Pozicia;
 
+typedef enum {
+    SVET_BEZ_PREKAZOK = 0,
+    SVET_S_PREKAZKAMI = 1
+} RezimSveta;
+
+
 typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t  cond_tick;     // server → klient
@@ -31,6 +45,8 @@ typedef struct {
 
     bool server_bezi;
     unsigned long tick;
+
+    RezimSveta rezim;
 
     // klient -> server
     Smer vstup;
@@ -43,6 +59,9 @@ typedef struct {
     int dlzka_hada;
 
     Pozicia ovocie;
+
+    Pozicia prekazky[MAX_PREKAZKY];
+    int pocet_prekazok;
 
 } HernyStav;
 
