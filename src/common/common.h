@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <time.h>
 
 #define SHM_NAME "/snake_pos_v0"
 
@@ -24,7 +25,9 @@ typedef enum {
     SMER_DOLE,
     SMER_VLAVO,
     SMER_VPRAVO,
-    SMER_KONIEC
+    SMER_KONIEC,
+    SMER_PAUZA,
+    SMER_POKRACUJ
 } Smer;
 
 typedef struct {
@@ -37,6 +40,11 @@ typedef enum {
     SVET_S_PREKAZKAMI = 1
 } RezimSveta;
 
+typedef enum {
+    UKONCENIE_STANDARDNE = 0,
+    UKONCENIE_CASOVE = 1
+} RezimUkoncenia;
+
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -47,6 +55,13 @@ typedef struct {
     unsigned long tick;
 
     RezimSveta rezim;
+
+    RezimUkoncenia rezim_ukoncenia;
+    // časovanie
+    time_t cas_zaciatku_hry;
+    time_t cas_posledneho_hraca;
+
+    int limit_casu;   // v sekundách
 
     // klient -> server
     Smer vstup;
@@ -62,6 +77,18 @@ typedef struct {
 
     Pozicia prekazky[MAX_PREKAZKY];
     int pocet_prekazok;
+    bool hra_spustena;
+
+    int skore;
+    bool hrac_pripojeny;
+    bool client_konci;
+
+    // pauza
+    bool hra_pozastavena;
+    time_t cas_zaciatku_pauzy;
+    time_t cas_obnovenia;
+
+    bool kolo_skoncilo;
 
 } HernyStav;
 

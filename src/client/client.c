@@ -9,6 +9,18 @@
 
 #include "../common/common.h"
 
+#define FARBA_RESET   "\033[0m"
+#define FARBA_CERVENA "\033[31m"
+#define FARBA_ZELENA  "\033[32m"
+#define FARBA_MODRA   "\033[34m"
+#define FARBA_BIELA   "\033[37m"
+
+struct termios globalny_term;
+
+void cleanup_terminal(void) {
+    tcsetattr(STDIN_FILENO, TCSANOW, &globalny_term);
+}
+
 void vypni_echo(struct termios* povodny) {
     struct termios t;
     tcgetattr(STDIN_FILENO, povodny);  // uložíme pôvodný stav
@@ -30,6 +42,8 @@ Smer precitaj_smer() {
         case 'a': return SMER_VLAVO;
         case 'd': return SMER_VPRAVO;
         case 'q': return SMER_KONIEC;
+        case 'p': return SMER_PAUZA;
+        case 'r': return SMER_POKRACUJ;
         default:  return SMER_NONE;
     }
 }
@@ -47,11 +61,15 @@ void* input_thread(void* arg) {
         stav->vstup = s;
         stav->novy_vstup = true;
         pthread_cond_signal(&stav->cond_vstup);
-        pthread_mutex_unlock(&stav->mutex);
 
         if (s == SMER_KONIEC) {
+            stav->client_konci = true;
+            pthread_cond_broadcast(&stav->cond_tick);
+            pthread_mutex_unlock(&stav->mutex);
             break;
         }
+
+        pthread_mutex_unlock(&stav->mutex);
     }
 
     return NULL;
@@ -67,45 +85,77 @@ void vykresli_mapu(HernyStav* stav) {
         }
     }
 
+    // 1,5. prekážky
+    for (int i = 0; i < stav->pocet_prekazok; i++) {
+        int x = stav->prekazky[i].x;
+        int y = stav->prekazky[i].y;
+
+        // pre istotu
+        if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+            mapa[y][x] = ZNAK_STENA;
+        }
+    }
+
+
     // 2. ovocie
     mapa[stav->ovocie.y][stav->ovocie.x] = ZNAK_OVOCIE;
 
     // 3. telo hada
-    for (int i = stav->dlzka_hada - 1; i > 0; i--) {
-        mapa[stav->had[i].y][stav->had[i].x] = ZNAK_TELO;
-    }
+    if (stav->dlzka_hada > 0) {
+        for (int i = stav->dlzka_hada - 1; i > 0; i--) {
+            mapa[stav->had[i].y][stav->had[i].x] = ZNAK_TELO;
+        }
 
-    // 4. hlava
-    mapa[stav->had[0].y][stav->had[0].x] = ZNAK_HLAVA;
+        // 4. hlava
+        mapa[stav->had[0].y][stav->had[0].x] = ZNAK_HLAVA;
+    }
 
     // 5. vykresli
     // horná stena
-    putchar('#');
-    for (int x = 0; x < MAP_WIDTH; x++) putchar('#');
-    putchar('#');
-    putchar('\n');
+    printf(FARBA_MODRA "#");
+    for (int x = 0; x < MAP_WIDTH; x++) printf("#");
+    printf("#\n" FARBA_RESET);
 
     // vnútro + bočné steny
     for (int y = 0; y < MAP_HEIGHT; y++) {
-        putchar('#'); // ľavá stena
+        printf(FARBA_MODRA "#"); // ľavá stena
+
         for (int x = 0; x < MAP_WIDTH; x++) {
-            putchar(mapa[y][x]);
+            char c = mapa[y][x];
+
+            switch (c) {
+                case ZNAK_OVOCIE:
+                    printf(FARBA_CERVENA "%c" FARBA_RESET, c);
+                    break;
+
+                case ZNAK_HLAVA:
+                case ZNAK_TELO:
+                    printf(FARBA_ZELENA "%c" FARBA_RESET, c);
+                    break;
+
+                case ZNAK_STENA:
+                    printf(FARBA_MODRA "%c" FARBA_RESET, c);
+                    break;
+
+                default:
+                    printf(FARBA_BIELA "%c" FARBA_RESET, c);
+                    break;
+            }
         }
-        putchar('#'); // pravá stena
-        putchar('\n');
+
+        printf(FARBA_MODRA "#\n"); // pravá stena
     }
 
     // dolná stena
-    putchar('#');
-    for (int x = 0; x < MAP_WIDTH; x++) putchar('#');
-    putchar('#');
-    putchar('\n');
+    printf(FARBA_MODRA "#");
+    for (int x = 0; x < MAP_WIDTH; x++) printf("#");
+    printf("#\n" FARBA_RESET);
 }
 
 
 void* render_thread(void* arg) {
     HernyStav* stav = (HernyStav*)arg;
-    unsigned long posledny_tick = 0;
+    unsigned long posledny_tick = (unsigned long)-1;        // aby sa vykreslila mapa pri prvom spusteni
 
     while (1) {
         pthread_mutex_lock(&stav->mutex);
@@ -114,10 +164,47 @@ void* render_thread(void* arg) {
             pthread_cond_wait(&stav->cond_tick, &stav->mutex);
         }
 
-        if (!stav->server_bezi) {
-            printf("[CLIENT] GAME OVER\n");
+        if (stav->client_konci) {
             pthread_mutex_unlock(&stav->mutex);
             break;
+        }
+
+        if (!stav->server_bezi) {
+            printf("\033[H\033[J"); // Vyčistí obrazovku
+            printf(FARBA_CERVENA "GAME OVER\n" FARBA_RESET);
+            int finalny_cas = (int)difftime(time(NULL), stav->cas_zaciatku_hry);
+
+            // Korekcia pre časový limit (aby neukazovalo napr. 21s pri limite 20s)
+            if (stav->rezim_ukoncenia == UKONCENIE_CASOVE && finalny_cas > stav->limit_casu) {
+                finalny_cas = stav->limit_casu;
+            }
+
+            if (finalny_cas < 0) finalny_cas = 0;
+
+            printf("Finálne skóre: " FARBA_ZELENA "%d" FARBA_RESET "\n", stav->skore);
+            printf("Doba prežitia: " FARBA_MODRA  "%d s" FARBA_RESET "\n\n", finalny_cas);
+            printf("Stlač Q pre odpojenie (potom spusti ./client znova pre novú hru)\n");
+            fflush(stdout);
+            pthread_mutex_unlock(&stav->mutex);
+            break;
+        }
+
+        if (stav->kolo_skoncilo) {
+            printf("\033[H\033[J"); // Vyčistí obrazovku
+            printf(FARBA_CERVENA "GAME OVER\n" FARBA_RESET);
+            int finalny_cas = (int)difftime(stav->cas_posledneho_hraca, stav->cas_zaciatku_hry);
+
+            // Poistka pre istotu (aby neukázalo -1s pri veľmi rýchlej smrti)
+            if (finalny_cas < 0) finalny_cas = 0;
+
+            printf("Finálne skóre: " FARBA_ZELENA "%d" FARBA_RESET "\n", stav->skore);
+            printf("Doba prežitia: " FARBA_MODRA  "%d s" FARBA_RESET "\n\n", finalny_cas);
+            printf("Stlač Q pre odpojenie (potom spusti ./client znova pre novú hru)\n");
+            fflush(stdout);
+
+            pthread_mutex_unlock(&stav->mutex);
+            usleep(100000);
+            continue; // Preskočí vykresľovanie mapy, lebo už sme vypísali Game Over
         }
 
         posledny_tick = stav->tick;
@@ -125,11 +212,36 @@ void* render_thread(void* arg) {
         //system("clear");
         //printf("\033[H");
         printf("\033[H\033[J");
-        printf("[CLIENT] Tick %lu | had %d  \n", stav->tick, stav->dlzka_hada);
-        /*for (int i = 0; i < stav->dlzka_hada; i++) {
-            printf("(%d,%d) ", stav->had[i].x, stav->had[i].y);
+        // --- REŽIM 1: PAUZA (HLAVNÉ MENU) ---
+        if (stav->hra_pozastavena) {
+            printf(FARBA_MODRA "=== HLAVNÉ MENU ===\n" FARBA_RESET);
+            printf("Hra je pozastavená.\n\n");
+            printf("Stlač " FARBA_ZELENA "'r'" FARBA_RESET " pre návrat do hry\n");
+            printf("Stlač " FARBA_CERVENA "'q'" FARBA_RESET " pre úplný koniec\n");
+
+            fflush(stdout);
+            pthread_mutex_unlock(&stav->mutex);
+            continue; // Nevykresľujeme mapu
         }
-        printf("| ovocie=(%d,%d)\n", stav->ovocie.x, stav->ovocie.y);*/
+
+        time_t teraz = time(NULL);
+        int uplynulo = 0;
+        if (stav->hra_spustena || stav->cas_obnovenia != 0) {
+            // Čas ukazujeme aj počas odpočítavania
+            uplynulo = difftime(teraz, stav->cas_zaciatku_hry);
+        }
+
+        printf("Skóre: %d | Čas: %d s\n", stav->skore, uplynulo);
+
+        // Ak beží odpočítavanie, vypíšeme ho vedľa času
+        if (stav->cas_obnovenia != 0) {
+            int do_startu = stav->cas_obnovenia - teraz;
+            if (do_startu > 0)
+                printf(FARBA_CERVENA " | Štart o: %d..." FARBA_RESET, do_startu);
+            else
+                printf(FARBA_ZELENA " | ŠTART!" FARBA_RESET);
+        }
+        printf("\n");
 
         vykresli_mapu(stav);
         fflush(stdout);
@@ -143,6 +255,8 @@ void* render_thread(void* arg) {
 int main() {
     struct termios povodny_term;   // LOKÁLNA PREMENNÁ
 
+    tcgetattr(STDIN_FILENO, &globalny_term);
+    atexit(cleanup_terminal);
     vypni_echo(&povodny_term);
 
     // 1. otvor existujúcu zdieľanú pamäť
@@ -160,6 +274,11 @@ int main() {
         perror("mmap");
         return 1;
     }
+
+    pthread_mutex_lock(&stav->mutex);
+    stav->hrac_pripojeny = true;
+    stav->client_konci = false;
+    pthread_mutex_unlock(&stav->mutex);
 
     printf("[CLIENT] Pripojený k serveru\n");
 
