@@ -5,8 +5,15 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
+#include <signal.h>
 
 #include "../common/common.h"
+
+void cleanup_and_exit(int signo) {
+    printf("\n[SERVER] Zachytený signál %d -> Upratujem a končím.\n", signo);
+    shm_unlink(SHM_NAME); // Zmaže zdieľanú pamäť zo systému
+    exit(0);
+}
 
 static bool je_na_hadovi(HernyStav* stav, int x, int y) {
     for (int i = 0; i < stav->dlzka_hada; i++) {
@@ -29,8 +36,8 @@ bool je_prekazka(HernyStav* stav, int x, int y) {
 static void vygeneruj_ovocie(HernyStav* stav) {
     int x, y;
     do {
-        x = rand() % MAP_WIDTH;
-        y = rand() % MAP_HEIGHT;
+        x = rand() % stav->sirka;
+        y = rand() % stav->vyska;
     } while (je_na_hadovi(stav, x, y) || je_prekazka(stav, x, y));
 
     stav->ovocie.x = x;
@@ -46,17 +53,23 @@ void generuj_prekazky(HernyStav* stav) {
         return; // v režime bez prekážok negenerujeme nič
     }
 
-    int ciel = MAX_PREKAZKY;
+    // Vypočítame 5% z plochy mapy
+    int plocha = stav->sirka * stav->vyska;
+    int cielovy_pocet = (plocha * 5) / 100; // 5 percent
+
+    // Poistka, aby sme neprekročili pole
+    if (cielovy_pocet > MAX_PREKAZKY) cielovy_pocet = MAX_PREKAZKY;
+
+    int ciel = cielovy_pocet;
 
     while (stav->pocet_prekazok < ciel) {
-        int x = rand() % MAP_WIDTH;
-        int y = rand() % MAP_HEIGHT;
+        int x = rand() % stav->sirka;
+        int y = rand() % stav->vyska;
 
         // 1. neokrajové pole (zjednodušenie dosiahnuteľnosti)
-        if (x == 0 || x == MAP_WIDTH - 1 ||
-            y == 0 || y == MAP_HEIGHT - 1) {
+        if (x == 0 || x == stav->sirka - 1 || y == 0 || y == stav->vyska - 1) {
             continue;
-            }
+        }
 
         // 2. nesmie byť na hadovi
         if (je_na_hadovi(stav, x, y)) continue;
@@ -94,16 +107,22 @@ static const char* smer_na_text(Smer s) {
     }
 }
 
-static void wrap_pozicia(Pozicia* p) {
-    if (p->x < 0)
-        p->x = MAP_WIDTH - 1;
-    else if (p->x >= MAP_WIDTH)
+static void wrap_pozicia(HernyStav* stav, Pozicia* p) {
+    // Kontrola šírky (X)
+    if (p->x < 0) {
+        p->x = stav->sirka - 1;
+    }
+    else if (p->x >= stav->sirka) {
         p->x = 0;
+    }
 
-    if (p->y < 0)
-        p->y = MAP_HEIGHT - 1;
-    else if (p->y >= MAP_HEIGHT)
+    // Kontrola výšky (Y)
+    if (p->y < 0) {
+        p->y = stav->vyska - 1;
+    }
+    else if (p->y >= stav->vyska) {
         p->y = 0;
+    }
 }
 
 
@@ -116,7 +135,7 @@ static void posun_hlavu(HernyStav* stav) {
         default: break;
     }
 
-    wrap_pozicia(&stav->had[0]);
+    wrap_pozicia(stav, &stav->had[0]);
 }
 
 static void posun_telo(HernyStav* stav) {
@@ -136,14 +155,26 @@ static bool kolizia_so_sebou(HernyStav* stav) {
 }
 
 int main(int argc, char** argv) {
+    signal(SIGINT, cleanup_and_exit);  // Ctrl+C
+    signal(SIGTERM, cleanup_and_exit); // Kill príkaz
+
     RezimSveta svet = SVET_BEZ_PREKAZOK;
     RezimUkoncenia ukoncenie = UKONCENIE_STANDARDNE;
     int limit = 0;
+    int sirka = 40; // Default
+    int vyska = 20; // Default
 
     if (argc >= 2) svet = atoi(argv[1]) ? SVET_S_PREKAZKAMI : SVET_BEZ_PREKAZOK;
     if (argc >= 3) ukoncenie = atoi(argv[2]) ? UKONCENIE_CASOVE : UKONCENIE_STANDARDNE;
-    if (ukoncenie == UKONCENIE_CASOVE && argc >= 4) limit = atoi(argv[3]);
+    if (argc >= 4) limit = atoi(argv[3]);
+    if (argc >= 5) sirka = atoi(argv[4]);
+    if (argc >= 6) vyska = atoi(argv[5]);
 
+    // Ošetrenie limitov
+    if (sirka > MAX_MAP_WIDTH) sirka = MAX_MAP_WIDTH;
+    if (vyska > MAX_MAP_HEIGHT) vyska = MAX_MAP_HEIGHT;
+    if (sirka < 10) sirka = 20;
+    if (vyska < 5) vyska = 10;
 
     printf("[SERVER] Režim sveta: %s\n", (svet == SVET_S_PREKAZKAMI) ? "S PREKÁŽKAMI" : "BEZ PREKÁŽOK");
 
@@ -203,6 +234,9 @@ int main(int argc, char** argv) {
     stav->skore = 0;
     stav->dlzka_hada = 0;
 
+    stav->sirka = sirka;
+    stav->vyska = vyska;
+
     srand(time(NULL));
     vygeneruj_ovocie(stav);
     generuj_prekazky(stav);
@@ -231,8 +265,8 @@ int main(int argc, char** argv) {
             stav->skore = 0;               // Reset skóre
 
             for (int i = 0; i < stav->dlzka_hada; i++) {
-                stav->had[i].x = (MAP_WIDTH / 2) - i;
-                stav->had[i].y = MAP_HEIGHT / 2;
+                stav->had[i].x = (stav->sirka / 2) - i;
+                stav->had[i].y = stav->vyska / 2;
             }
 
             vygeneruj_ovocie(stav);
@@ -452,4 +486,6 @@ int main(int argc, char** argv) {
 
     printf("[SERVER] Končím\n");
 
+    shm_unlink(SHM_NAME);
+    return 0;
 }

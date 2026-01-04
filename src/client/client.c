@@ -5,7 +5,8 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <termios.h>
-
+#include <string.h>
+#include <sys/wait.h>
 
 #include "../common/common.h"
 
@@ -76,11 +77,11 @@ void* input_thread(void* arg) {
 }
 
 void vykresli_mapu(HernyStav* stav) {
-    char mapa[MAP_HEIGHT][MAP_WIDTH];
+    char mapa[stav->vyska][stav->sirka];
 
     // 1. vyplň prázdno
-    for (int y = 0; y < MAP_HEIGHT; y++) {
-        for (int x = 0; x < MAP_WIDTH; x++) {
+    for (int y = 0; y < stav->vyska; y++) {
+        for (int x = 0; x < stav->sirka; x++) {
             mapa[y][x] = ZNAK_PRAZDNO;
         }
     }
@@ -91,7 +92,7 @@ void vykresli_mapu(HernyStav* stav) {
         int y = stav->prekazky[i].y;
 
         // pre istotu
-        if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+        if (x >= 0 && x < stav->sirka && y >= 0 && y < stav->vyska) {
             mapa[y][x] = ZNAK_STENA;
         }
     }
@@ -113,14 +114,14 @@ void vykresli_mapu(HernyStav* stav) {
     // 5. vykresli
     // horná stena
     printf(FARBA_MODRA "#");
-    for (int x = 0; x < MAP_WIDTH; x++) printf("#");
+    for (int x = 0; x < stav->sirka; x++) printf("#");
     printf("#\n" FARBA_RESET);
 
     // vnútro + bočné steny
-    for (int y = 0; y < MAP_HEIGHT; y++) {
+    for (int y = 0; y < stav->vyska; y++) {
         printf(FARBA_MODRA "#"); // ľavá stena
 
-        for (int x = 0; x < MAP_WIDTH; x++) {
+        for (int x = 0; x < stav->sirka; x++) {
             char c = mapa[y][x];
 
             switch (c) {
@@ -148,7 +149,7 @@ void vykresli_mapu(HernyStav* stav) {
 
     // dolná stena
     printf(FARBA_MODRA "#");
-    for (int x = 0; x < MAP_WIDTH; x++) printf("#");
+    for (int x = 0; x < stav->sirka; x++) printf("#");
     printf("#\n" FARBA_RESET);
 }
 
@@ -252,48 +253,179 @@ void* render_thread(void* arg) {
     return NULL;
 }
 
-int main() {
-    struct termios povodny_term;   // LOKÁLNA PREMENNÁ
+int spustit_hru() {
+    struct termios povodny_term;
 
+    // Nastavenie terminálu pre hru (RAW mód - bez Enteru)
     tcgetattr(STDIN_FILENO, &globalny_term);
-    atexit(cleanup_terminal);
     vypni_echo(&povodny_term);
 
-    // 1. otvor existujúcu zdieľanú pamäť
     int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
     if (shm_fd == -1) {
-        perror("shm_open");
+        cleanup_terminal(); // Obnoviť terminál pred výpisom chyby
+        perror("shm_open (Server asi nebeží)");
         return 1;
     }
 
-    // 2. namapuj pamäť
-    HernyStav* stav = mmap(NULL, sizeof(HernyStav),
-                           PROT_READ | PROT_WRITE,
-                           MAP_SHARED, shm_fd, 0);
+    HernyStav* stav = mmap(NULL, sizeof(HernyStav), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (stav == MAP_FAILED) {
+        cleanup_terminal();
         perror("mmap");
         return 1;
     }
 
+    // Nastavíme, že som sa pripojil
     pthread_mutex_lock(&stav->mutex);
     stav->hrac_pripojeny = true;
     stav->client_konci = false;
     pthread_mutex_unlock(&stav->mutex);
 
-    printf("[CLIENT] Pripojený k serveru\n");
-
-    // 3. vytvor vlákna
     pthread_t t_render, t_input;
-
     pthread_create(&t_render, NULL, render_thread, stav);
-    pthread_create(&t_input,  NULL, input_thread,  stav);
+    pthread_create(&t_input, NULL, input_thread, stav);
 
-    // 4. počkaj na ukončenie
-    pthread_join(t_input, NULL);
     pthread_join(t_render, NULL);
+    pthread_join(t_input, NULL);
 
-    printf("[CLIENT] Končím\n");
-    zapni_echo(&povodny_term);
+    pthread_mutex_lock(&stav->mutex);
+    stav->hrac_pripojeny = false;
+    pthread_mutex_unlock(&stav->mutex);
+
+    munmap(stav, sizeof(HernyStav));
+
+    // Obnovenie terminálu po skončení hry
+    cleanup_terminal();
     return 0;
+}
 
+int main() {
+    int volba = 0;
+
+    while (1) {
+        // Vyčistíme obrazovku
+        system("clear");
+
+        printf(FARBA_MODRA "==================================\n");
+        printf("          HADÍK - CLIENT          \n");
+        printf("==================================\n" FARBA_RESET);
+        printf("1. Nová hra (Spustiť server + pripojiť)\n");
+        printf("2. Pripojiť sa k existujúcej hre\n");
+        printf("3. Koniec\n");
+        printf("----------------------------------\n");
+        printf("Tvoja voľba: ");
+
+        if (scanf("%d", &volba) != 1) {
+            // Ošetrenie zlého vstupu (napr. písmená)
+            while(getchar() != '\n');
+            continue;
+        }
+
+        if (volba == 3) {
+            printf("Končím aplikáciu.\n");
+            break;
+        }
+
+        if (volba == 2) {
+            // Len sa pripojíme
+            spustit_hru();
+        }
+        else if (volba == 1) {
+            // --- KROK 1: ZABITIE STARÉHO SERVERA ---
+            int shm_fd_old = shm_open(SHM_NAME, O_RDWR, 0666);
+            if (shm_fd_old != -1) {
+                printf(FARBA_CERVENA "Nájdený starý server. Vypínam ho...\n" FARBA_RESET);
+
+                HernyStav* stav_old = mmap(NULL, sizeof(HernyStav), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_old, 0);
+                if (stav_old != MAP_FAILED) {
+
+                    // BEZ MUTEXU - aby sme nezamrzli, ak je starý server zaseknutý
+                    stav_old->server_bezi = false;
+
+                    // Skúsime ho zobudiť (ak náhodou spí a mutex je v poriadku, pomôže to)
+                    // Ak je mutex poškodený, toto môže zlyhať, ale program pobeží ďalej
+                    pthread_cond_broadcast(&stav_old->cond_tick);
+
+                    munmap(stav_old, sizeof(HernyStav));
+                }
+
+                close(shm_fd_old);
+                shm_unlink(SHM_NAME); // Toto je to hlavné - zmaže pamäť
+
+                usleep(100000);
+            }
+
+            // Získame parametre pre server
+            int svet = 0;
+            int rezim = 0;
+            int limit = 0;
+            int w = 40, h = 20;
+
+            printf("\n-- Nastavenie novej hry --\n");
+            printf("Typ sveta (0 = Bez prekážok, 1 = S prekážkami): ");
+            scanf("%d", &svet);
+
+            printf("Režim ukončenia (0 = Štandard, 1 = Časový limit): ");
+            scanf("%d", &rezim);
+
+            if (rezim == 1) {
+                printf("Zadaj časový limit v sekundách (napr. 30): ");
+                scanf("%d", &limit);
+            }
+
+            printf("Zadaj šírku mapy (10 - %d): ", MAX_MAP_WIDTH);
+            scanf("%d", &w);
+            printf("Zadaj výšku mapy (5 - %d): ", MAX_MAP_HEIGHT);
+            scanf("%d", &h);
+
+            printf("\nŠtartujem server...\n");
+
+            // --- FORK ---
+            pid_t pid = fork();
+
+            if (pid == 0) {
+                // === PROCES DIEŤA (SERVER) ===
+
+                // Pripravíme argumenty ako reťazce
+                char arg_svet[10];
+                char arg_rezim[10];
+                char arg_limit[10];
+                char arg_w[10];
+                char arg_h[10];
+
+                sprintf(arg_svet, "%d", svet);
+                sprintf(arg_rezim, "%d", rezim);
+                sprintf(arg_limit, "%d", limit);
+                sprintf(arg_w, "%d", w);
+                sprintf(arg_h, "%d", h);
+
+                // Spustíme server: execlp("názov_programu", "argv[0]", "argv[1]", ..., NULL)
+                // Predpokladáme, že ./server je v rovnakom priečinku
+                // execlp potrebuje textovy retazec
+                execlp("./server", "server", arg_svet, arg_rezim, arg_limit, arg_w, arg_h, NULL);
+
+                // Ak sa execlp vráti, znamená to chybu
+                perror("Nepodarilo sa spustiť server");
+                exit(1);
+            }
+            else if (pid > 0) {
+                // === PROCES RODIČ (KLIENT) ===
+
+                // Počkáme chvíľu, kým server naštartuje a vytvorí pamäť
+                sleep(1);
+
+                // Pripojíme sa
+                spustit_hru();
+
+                // Keď hra skončí (spustit_hru vráti 0), môžeme počkať na ukončenie servera,
+                // alebo nechať server bežať, ak by sme chceli reconnect.
+                // Podľa zadania "ak hráč definitívne odíde, hadík zmizne" a server sa asi vypne sám na timeout.
+                // Takže tu nemusíme robiť nič špeciálne.
+            }
+            else {
+                perror("Fork zlyhal");
+            }
+        }
+    }
+
+    return 0;
 }

@@ -7,10 +7,10 @@
 
 #define SHM_NAME "/snake_pos_v0"
 
-#define MAP_WIDTH  40
-#define MAP_HEIGHT 20
+#define MAX_MAP_WIDTH  100
+#define MAX_MAP_HEIGHT 50
 #define MAX_DLZKA_HADA 100
-#define MAX_PREKAZKY 30
+#define MAX_PREKAZKY 500
 
 #define ZNAK_PRAZDNO ' '
 #define ZNAK_STENA   '#'
@@ -57,6 +57,10 @@ typedef struct {
     RezimSveta rezim;
 
     RezimUkoncenia rezim_ukoncenia;
+
+    int sirka;
+    int vyska;
+
     // časovanie
     time_t cas_zaciatku_hry;
     time_t cas_posledneho_hraca;
