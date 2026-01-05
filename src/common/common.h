@@ -7,6 +7,8 @@
 
 #define SHM_NAME "/snake_pos_v0"
 
+#define MIN_MAP_WIDTH  10
+#define MIN_MAP_HEIGHT 5
 #define MAX_MAP_WIDTH  100
 #define MAX_MAP_HEIGHT 50
 #define MAX_DLZKA_HADA 100
