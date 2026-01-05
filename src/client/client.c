@@ -27,7 +27,9 @@ Smer precitaj_klavesu() {
 
 void* input_thread(void* arg) {
     HernyStav* stav = (HernyStav*)arg;
-    while (stav->server_bezi) {
+
+    // OPRAVA: Nekontrolujeme server_bezi v hlavičke, ale vnútri
+    while (1) {
         Smer s = precitaj_klavesu();
         if (s == SMER_NONE) {
             continue;
@@ -35,41 +37,46 @@ void* input_thread(void* arg) {
 
         pthread_mutex_lock(&stav->mutex);
 
-        // Ak sme zadali príkaz, ale server ho ešte nespracoval,
-        // musíme počkať, inak by sme ho prepísali a zákruta by sa nevykonala.
-        while (stav->novy_vstup && stav->server_bezi && !stav->client_konci) {
-            // Čakáme na signál od servera (cond_tick), ktorý príde po spracovaní pohybu
-            pthread_cond_wait(&stav->cond_tick, &stav->mutex);
-        }
-        // -------------------------------------------
-
-        // Ak medzitým hra skončila, vyskočíme
-        if (!stav->server_bezi || stav->client_konci) {
-            pthread_mutex_unlock(&stav->mutex);
-            break;
-        }
-
-        // Ak sme stlačili Q, musíme to dať vedieť všetkým
+        // 1. Najprv skontrolujeme Q (Koniec) - to má prednosť aj keď server stojí
         if (s == SMER_KONIEC) {
             stav->vstup = s;
             stav->novy_vstup = true;
             stav->client_konci = true; // Dôležité: Klient chce skončiť
 
-            pthread_cond_signal(&stav->cond_vstup); // Povieme serveru
-            pthread_cond_broadcast(&stav->cond_tick); // ZOBUDÍME RENDER VLÁKNO (Oprava zaseknutia)
+            pthread_cond_signal(&stav->cond_vstup);
+            pthread_cond_broadcast(&stav->cond_tick); // Zobudíme render vlákno
 
             pthread_mutex_unlock(&stav->mutex);
             break; // Ukončíme input thread
+        }
+
+        // 2. Ak server už nebeží (napr. vypršal čas) a nestlačili sme Q,
+        // tak ignorujeme ostatné klávesy alebo končíme.
+        if (!stav->server_bezi) {
+            pthread_mutex_unlock(&stav->mutex);
+            // Ak server skončil, ale my sme nestlačili Q, len čakáme na Q.
+            // Takže continue, aby sme načítali ďalšiu klávesu.
+            continue;
+        }
+
+        // 3. Bufferovanie vstupu (W+A fix)
+        while (stav->novy_vstup && stav->server_bezi && !stav->client_konci) {
+            pthread_cond_wait(&stav->cond_tick, &stav->mutex);
+        }
+
+        // Ak medzitým hra skončila (kým sme čakali v buffery)
+        if (!stav->server_bezi || stav->client_konci) {
+            pthread_mutex_unlock(&stav->mutex);
+            // Tu nebreakneme hneď, necháme cyklus bežať, aby sme mohli zachytiť Q v ďalšej iterácii
+            // alebo ak chceme skončiť hneď, musíme si byť istí, že render skončí tiež.
+            // Najbezpečnejšie je nechať to na Q.
+            continue;
         }
 
         stav->vstup = s;
         stav->novy_vstup = true;
         pthread_cond_signal(&stav->cond_vstup);
         pthread_mutex_unlock(&stav->mutex);
-
-        if (!stav->server_bezi) {
-            break;
-        }
     }
     return NULL;
 }
